@@ -93,7 +93,25 @@ Explicit bit-widths from 8 to 4096 bits. Unary `+ - *` trap on overflow; bit ope
 
 ---
 
-## 4. Keywords & Modifiers
+## 4. Literal Formats & Suffixes (D-147, D-148)
+
+All numeric literals begin with a decimal digit `0`–`9` (the leading-digit rule, D-147). Legacy C prefixes (`0x`, `0b`, `0o`) are invalid. Bases and widths are specified via suffixes:
+
+| Base | Suffix | Digits Allowed | Example with Type Suffix | Decimal Value |
+|---|---|---|---|---|
+| **Decimal** | *(none)* | `0-9`, `_` | `42i32`, `1000u64` | 42, 1000 |
+| **Hexadecimal** | `hex` | `0-9`, `a-f`, `A-F`, `_` | `0FFhexu8`, `0DEADBEEFhexu64` | 255, 3735928559 |
+| **Binary** | `bin` | `0-1`, `_` | `1010_1010binu8`, `1111binu16` | 170, 15 |
+| **Octal** | `oct` | `0-7`, `_` | `755octu16`, `0755octu32` | 493, 493 |
+| **Balanced Ternary** | `tri` / `t` | `0, 1`, `T, t` ($-1$) | `1T01tri`, `1T01t` | 22 |
+| **Balanced Nonary** | `non` / `n` | `0-4`, `a-d, A-D` ($-1 \dots -4$) | `1A2non`, `1A2n` | 74 |
+| **Floating Point** | *(none)* | `0-9`, `.`, `e/E` | `3.1415f32`, `2.71828f64` | 3.1415, 2.71828 |
+
+> **Leading-Digit Rule:** If a hex literal's first significant digit is a letter `A`–`F`, prepend a value-neutral `0` (e.g. `0FFhex`, never `FFhex`). C-style `0xFF` generates a `NITPICK-LEX-003` error.
+
+---
+
+## 5. Keywords & Modifiers
 
 ### Declarations
 * `func:name = Ret(Params)`: Function definition.
@@ -134,7 +152,7 @@ Explicit bit-widths from 8 to 4096 bits. Unary `+ - *` trap on overflow; bit ope
 
 ---
 
-## 5. Built-in Intrinsics
+## 6. Built-in Intrinsics
 
 Intrinsics available globally without imports:
 

@@ -208,12 +208,21 @@ Coming from C, C++, or Rust, you might be tempted to write `&out` to borrow a va
   nio_line(@out, "text") ?! Err; // Borrows out via address-of @
   ```
 
-### 8. Explicit Numeric Literal Suffixes
-Nitpick enforces strict type safety with zero implicit numeric coercion or widening. Always suffix literals with their target bit-width:
-* Signed: `0i8`, `10i16`, `42i32`, `1000i64`
-* Unsigned: `0u8`, `255u8`, `65535u16`, `100u64`
-* Hex / Binary / Octal: `0xFFu8`, `0b1010bin`, `0o755oct`
-* Floats: `3.1415f32`, `2.71828f64`
+### 8. Numeric Literal Syntax & Suffixes
+Nitpick enforces a unified literal syntax across all bases with zero implicit widening and no legacy C prefixes (D-147):
+* **The Leading-Digit Rule (D-147)**: Every number begins with a decimal digit `0`–`9`. If the first significant digit of a hexadecimal literal is a letter `A`–`F`, it takes a value-neutral leading zero (e.g., `0FFhex`, not `FFhex`).
+* **Base Suffixes**: The base is specified as a suffix directly after the digits:
+  * Hexadecimal: `...hex` (e.g., `0FFhex`, `1Ahex`, `0DEADBEEFhex`)
+  * Binary: `...bin` (e.g., `1010bin`, `0101bin`, `1010_1010bin`)
+  * Octal: `...oct` (e.g., `755oct`, `0755oct`)
+  * Balanced Ternary: `...tri` or `...t` (e.g., `1T01tri`, where `T`/`t` denotes `-1`)
+* **Type Suffixes**: Width and signedness suffixes attach directly *after* the base suffix:
+  * `0FFhexu8`: Hexadecimal 255 as `uint8`
+  * `1010_1010binu8`: Binary 170 as `uint8`
+  * `755octu16`: Octal 493 as `uint16`
+  * `0DEADBEEFhexu64`: Hexadecimal as `uint64`
+  * Standard decimals: `0i8`, `42i32`, `100u64`, `3.1415f32`
+*(Note: Legacy C-style prefixes like `0x`, `0b`, and `0o` were explicitly removed in D-147 so all bases share one consistent syntax. Writing `0xFF` is a compile-time `NITPICK-LEX-003` syntax error).*
 
 ### 9. Declaring Errors with `error:Name;`
 Instead of throwing exception classes or passing untyped integer codes, declare domain errors as top-level items:
