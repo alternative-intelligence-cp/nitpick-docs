@@ -182,3 +182,44 @@ Nitpick does not permit silently dropping a `Result`. You must:
 - Provide a fallback value: `val = result ?| default_val`
 - Propagate to caller: `val = _^ result` (or `relay result`)
 - Explicitly discard (if intentional): `drop result`
+
+### 6. Pattern Matching with `pick` and Exhaustive Error Handling
+Nitpick uses `pick` instead of `switch` or `match`. It is the core mechanism for handling variants, errors, and conditions:
+```nitpick
+pub func:failsafe = int32(Error:e) {
+    pick (e) {
+        (Err)            { exit 1i32; },
+        (IntOverflow)    { exit 93i32; },
+        (OutOfBounds)    { exit 94i32; },
+        (*)              { exit 99i32; } // Wildcard default arm
+    }
+    exit 99i32;
+};
+```
+* **No Accidental Fallthrough**: Unlike C's `switch`, cases do not fall through; no `break` statement is needed.
+* **Syntax**: Each arm is parenthesized `(Pattern) { body }`, separated by commas. The wildcard default arm is `(*)`.
+* **Reachability Analysis**: The compiler computes every possible error that can reach `failsafe`. If your code performs checked math (`IntOverflow`), accesses slices (`OutOfBounds`), allocates heap memory (`HeapOom`), or escalates a custom error (`Err`), `failsafe` **must** name that error or provide a wildcard `(*)` arm. Omitting a reachable error will fail at compile time.
+
+### 7. Borrowing and Address-Of Uses `@` (Not `&`)
+Coming from C, C++, or Rust, you might be tempted to write `&out` to borrow a value. 
+* In Nitpick, `&` is **strictly bitwise AND**.
+* The address-of operator is **`@`**. When passing a pointer argument to a function expecting `Type->`, pass `@variable`:
+  ```nitpick
+  nio_line(@out, "text") ?! Err; // Borrows out via address-of @
+  ```
+
+### 8. Explicit Numeric Literal Suffixes
+Nitpick enforces strict type safety with zero implicit numeric coercion or widening. Always suffix literals with their target bit-width:
+* Signed: `0i8`, `10i16`, `42i32`, `1000i64`
+* Unsigned: `0u8`, `255u8`, `65535u16`, `100u64`
+* Hex / Binary / Octal: `0xFFu8`, `0b1010bin`, `0o755oct`
+* Floats: `3.1415f32`, `2.71828f64`
+
+### 9. Declaring Errors with `error:Name;`
+Instead of throwing exception classes or passing untyped integer codes, declare domain errors as top-level items:
+```nitpick
+error:Err;
+error:NotFound;
+error:Timeout;
+```
+Each error is assigned a deterministic identity by the compiler, allowing compile-time exhaustiveness checking in `pick` blocks.
