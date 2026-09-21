@@ -1,0 +1,32 @@
+mod:hello_canonical;
+error:Err;
+
+use "../../../../REPOS/nitpick/lib/nio.npk".*;
+
+// Canonical Nitpick "Hello World"
+// 1. All functions except pub func:main and pub func:failsafe return Result<T>.
+// 2. String I/O operations are checked with emphatic unwrap (?! Err) or Result handling.
+// 3. pub func:main and pub func:failsafe are the only places exit() may be called.
+
+pub func:main = int32(cstring[]:_~argv) {
+    NioW:out = raw nio_stdout();
+    nio_line(@out, "Hello from Nitpick!") ?! Err;
+    nio_end(@out) ?! Err;
+    exit 0i32;
+};
+
+pub func:failsafe = int32(Error:e) {
+    pick (e) {
+        (Err)            { exit 1i32; },
+        (IntOverflow)    { exit 93i32; },
+        (OutOfBounds)    { exit 94i32; },
+        (HeapBadRequest) { exit 91i32; },
+        (HeapOom)        { exit 92i32; },
+        (Unreachable)    { exit 95i32; },
+        (WildLeak)       { exit 96i32; },
+        (StackExhausted) { exit 97i32; },
+        (MachineFault)   { exit 98i32; },
+        (*)              { exit 99i32; }
+    }
+    exit 99i32;
+};

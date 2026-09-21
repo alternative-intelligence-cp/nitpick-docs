@@ -1,0 +1,106 @@
+mod:gui_bridge_poc;
+error:Err;
+
+use "../../../../REPOS/nitpick/lib/nbridge.npk".*;
+use "../../../../REPOS/nitpick/lib/nio.npk".*;
+
+extern:"canvas_drv" = {
+    func:ping         = int64(Bridge->:b, int64:val, Duration:within);
+    func:render_ppm   = int64(Bridge->:b, int32:width, int32:height, int32:color, Duration:within);
+    func:filter_image = int64(Bridge->:b, uint8[]:pixels, int32:width, int32:height, Duration:within);
+    func:crash_driver = NIL(Bridge->:b, Duration:within);
+};
+
+async func:main = int32(cstring[]:argv) {
+    if (argv.len < 2i64) {
+        exit 1i32;
+    }
+    string:drv_path = string_from_bytes(argv[1i64].ptr, argv[1i64].len);
+    Path:p = path_parse(drv_path) ?! Err;
+    int64:h = raw canvas_drv_iface_hash();
+
+    NioW:out = raw nio_stdout();
+    nio_line(@out, "=== Nitpick Out-of-Process Driver / Bridge POC ===") ?! Err;
+
+    // 1. Spawn Driver
+    Bridge:b = await spawn_driver(p, 65536i64, 64i64, h, raw duration_secs(5i64)) ?! Err;
+    nio_line(@out, "[+] Successfully spawned out-of-process C driver over sealed shared memory ring.") ?! Err;
+
+    // 2. Ping-pong latency & throughput (10,000 sequential round-trip calls)
+    int64:p_val = 0i64;
+    int64:iters = 10000i64;
+    int64:i = 0i64;
+    while (i < iters) {
+        Result<int64>:pr = await ping(@b, p_val, raw duration_secs(5i64));
+        if (pr.is_error) { exit 3i32; }
+        p_val = pr.value;
+        i = i + 1i64;
+    }
+    if (p_val != 10000i64) { exit 4i32; }
+    nio_line(@out, "[+] Completed 10,000 sequential IPC round-trips over shared-memory ring.") ?! Err;
+
+    // 3. Render Canvas
+    Result<int64>:rr = await render_ppm(@b, 400i32, 300i32, 255i32, raw duration_secs(5i64));
+    if (rr.is_error) { exit 5i32; }
+    string:rm = string_concat("[+] Rendered 400x300 canvas to canvas_output.ppm: pixels = ",
+                              string_concat(int_to_string(rr.value), ""));
+    nio_line(@out, rm) ?! Err;
+
+    // 4. Bulk Data Passing (slice over ring)
+    uint8[16]:buf = [10u8, 20u8, 30u8, 40u8, 50u8, 60u8, 70u8, 80u8,
+                     90u8, 100u8, 110u8, 120u8, 130u8, 140u8, 150u8, 160u8];
+    uint8[]:slice = buf[0i64...16i64];
+    Result<int64>:fr = await filter_image(@b, slice, 4i32, 4i32, raw duration_secs(5i64));
+    if (fr.is_error) { exit 6i32; }
+    string:fm = string_concat("[+] Filtered image buffer via zero-copy slice: sum = ",
+                              string_concat(int_to_string(fr.value), ""));
+    nio_line(@out, fm) ?! Err;
+
+    // 5. Fault containment test: trigger C segfault
+    nio_line(@out, "[*] Triggering crash_driver (intentionally dereferencing NULL in C driver)...") ?! Err;
+    Result<NIL>:cr = await crash_driver(@b, raw duration_secs(5i64));
+    if (!cr.is_error) {
+        nio_line(@out, "FAIL: crash_driver did not report error!") ?! Err;
+        exit 7i32;
+    }
+    if (cr.err == EDriverFault) {
+        nio_line(@out, "[+] SUCCESS: Driver crashed with SIGSEGV, but Nitpick safely intercepted it as EDriverFault!") ?! Err;
+        nio_line(@out, "[+] Nitpick runtime was NOT harmed and continues executing smoothly.") ?! Err;
+    } else {
+        nio_line(@out, "Unexpected error returned on driver crash") ?! Err;
+        exit 8i32;
+    }
+
+    drop bridge_reap(@b);
+    nio_line(@out, "[+] Driver reaped cleanly. POC complete!") ?! Err;
+    nio_end(@out) ?! Err;
+    exit 0i32;
+};
+
+func:failsafe = int32(Error:e) {
+    pick (e) {
+        (Err)              { exit 1i32; },
+        (EDriverError)     { exit 84i32; },
+        (ERingFull)        { exit 85i32; },
+        (EBridgePoisoned)  { exit 86i32; },
+        (EShmCreate)       { exit 87i32; },
+        (EShmSeal)         { exit 88i32; },
+        (EShmMap)          { exit 89i32; },
+        (EDriverSpawn)     { exit 90i32; },
+        (HeapBadRequest)   { exit 91i32; },
+        (HeapOom)          { exit 92i32; },
+        (IntOverflow)      { exit 93i32; },
+        (EDriverFault)     { exit 94i32; },
+        (EDriverProtocol)  { exit 95i32; },
+        (EDriverDeadline)  { exit 96i32; },
+        (DeadlineExceeded) { exit 97i32; },
+        (Unreachable)      { exit 98i32; },
+        (WildLeak)         { exit 99i32; },
+        (StackExhausted)   { exit 100i32; },
+        (MachineFault)     { exit 101i32; },
+        (BadPath)          { exit 102i32; },
+        (OutOfBounds)      { exit 103i32; },
+        (*)                { exit 104i32; }
+    }
+    exit 105i32;
+};
