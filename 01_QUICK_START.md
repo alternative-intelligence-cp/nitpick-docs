@@ -1,234 +1,221 @@
-# Nitpick Quick Start Guide
+# Nitpick quick start
 
-Welcome to **Nitpick**, a modern systems programming language engineered for formal safety, mechanical determinism, zero undefined behavior, and out-of-process legacy interop.
+## Install first
 
-This guide will walk you through the toolchain prerequisites, project structure, writing your first canonical "Hello World" program, and compiling it to a standalone, native static executable.
+Follow [INSTALL.md](https://github.com/alternative-intelligence-cp/nitpick/blob/main/INSTALL.md) through its source build and installation steps, including the LLVM 20 tools and PATH setup.
+Use its installed `npkc`, runtime object and `npkbuild` helper for this guide.
 
----
+## A first program
 
-## 1. Toolchain Prerequisites
-
-Nitpick compiles directly to LLVM Intermediate Representation (IR), which is assembled and linked by standard LLVM utilities:
-
-| Tool | Purpose | Ubuntu / Debian Package |
-|---|---|---|
-| `npkc` | Nitpick native compiler frontend (emits `.ll`) | Built from Nitpick repository |
-| `npkrt.o` | Nitpick runtime object (entrypoint, slab allocator, IPC) | Built from Nitpick repository |
-| `llc` | LLVM static compiler (lowers `.ll` to `.o`) | `llvm` |
-| `ld.lld` | High-performance LLVM linker (links static binary) | `lld` |
-| `python3` | Test harness and benchmark automation | `python3` |
-
-### Verifying Tools on Your System
-
-Ensure LLVM tools are in your `PATH`:
-```bash
-llc --version
-ld.lld --version
-```
-
-The Nitpick compiler binary and runtime live in the Nitpick repository's `build/` directory:
-- Compiler frontend: `REPOS/nitpick/build/npkc`
-- Runtime object: `REPOS/nitpick/build/npkrt.o`
-
----
-
-## 2. Your First Program: Canonical "Hello World"
-
-Create a new file named `hello.npk`:
+Save this as `hello.npk` in a folder of your choice, as in INSTALL.md:
 
 ```nitpick
 mod:hello;
-error:Err;
 
-use "REPOS/nitpick/lib/nio.npk".*;
-
-// Canonical Nitpick Entry Points
-pub func:main = int32(cstring[]:_~argv) {
-    // Acquire stdout handle
-    NioW:out = raw nio_stdout();
-    
-    // Write line with emphatic unwrap (?! Err escalates failure to failsafe)
-    nio_line(@out, "Hello from Nitpick!") ?! Err;
-    nio_end(@out) ?! Err;
-    
-    // Explicit return code from main
+func:main = int32(cstring[]:_~argv) {
+    string:greeting = "hello from Nitpick\n";
+    discard(write(1i32 =>! fd, greeting.ptr =>! wild int8->, greeting.len) ?! E9);
     exit 0i32;
 };
 
-// Global deterministic failsafe handler
-pub func:failsafe = int32(Error:e) {
+error:E9;
+
+func:failsafe = int32(Error:e) {
     pick (e) {
-        (Err)            { exit 1i32; },
-        (IntOverflow)    { exit 93i32; },
-        (OutOfBounds)    { exit 94i32; },
-        (HeapBadRequest) { exit 91i32; },
-        (HeapOom)        { exit 92i32; },
-        (Unreachable)    { exit 95i32; },
-        (WildLeak)       { exit 96i32; },
+        (E9)             { exit 9i32; },
         (StackExhausted) { exit 97i32; },
         (MachineFault)   { exit 98i32; },
+        (Unreachable)    { exit 95i32; },
+        (HeapOom)        { exit 92i32; },
+        (HeapBadRequest) { exit 91i32; },
+        (WildLeak)       { exit 96i32; },
         (*)              { exit 99i32; }
     }
     exit 99i32;
 };
 ```
 
----
+Build and run it from that folder with the same commands as INSTALL.md:
 
-## 3. How to Compile and Run
-
-There are two primary ways to build Nitpick applications: **Method A** using the automated test harness, or **Method B** invoking the direct compiler pipeline.
-
-### Method A: Using the Automated Runner (Fastest)
-
-Nitpick provides a lightweight Python runner harness (`runner.py`) that handles LLVM IR generation, assembly, and static linking in one step:
-
-```bash
-# Debug build (no optimizations, fast turnaround)
-python3 META/NITPICK/tests/tools/runner.py hello.npk
-
-# Optimized build with LLVM -O2
-python3 META/NITPICK/tests/tools/runner.py --opt hello.npk
-```
-
-**Output:**
-```
-[*] Compiling hello.npk (opt=False)...
-[+] Built tests/.build/hello
-[*] Executing tests/.build/hello...
-Hello from Nitpick!
-[*] Finished in 0.66 ms with exit code 0
-```
-
----
-
-### Method B: Direct CLI Pipeline (Step-by-Step)
-
-If you want to understand how the pipeline works under the hood or integrate with existing Makefiles/build systems, run the three core stages directly:
-
-#### Step 1: Compile Nitpick Source to LLVM IR
-```bash
-/path/to/nitpick/build/npkc hello.npk -o hello.ll
-```
-This performs syntax parsing, type checking, borrow and alias analysis, formal contract verification, and lowers the AST into native LLVM IR (`hello.ll`).
-
-#### Step 2: Assemble LLVM IR to Machine Object Code
-```bash
+```sh
+npkc hello.npk -o hello.ll
 llc -O0 -filetype=obj -relocation-model=static hello.ll -o hello.o
-```
-*(For release builds, replace `-O0` with `-O2`).*
-
-#### Step 3: Statically Link with the Nitpick Runtime
-```bash
-ld.lld -static -o hello hello.o /path/to/nitpick/build/npkrt.o
-```
-This produces a completely standalone, dependency-free static binary `hello`.
-
-#### Step 4: Execute
-```bash
+ld.lld -static -o hello hello.o ~/.local/lib/nitpick/npkrt.o
 ./hello
-# Hello from Nitpick!
-
-echo $?
-# 0
 ```
 
----
+What's in it, as in INSTALL.md section 5:
 
-## 4. Fundamental Rules Every Nitpick Developer Must Know
+- `main` takes the command line and returns an `int32`. `exit` stops the program and is legal only in `main` and `failsafe`.
+- `write` makes one kernel write to file descriptor 1. Its `Result` is followed by `?! E9` to take the value or send `E9` to `failsafe` on failure. `discard` explicitly discards the returned byte count.
+- `failsafe` receives uncaught errors and must name every error that can reach it, as well as include `(*)`.
 
-If you are coming from C, Rust, Go, or Python, here are the core rules that define how Nitpick operates:
+It prints `hello from Nitpick` and exits with status 0.
+The `mod:hello;` declaration matches the file name `hello.npk`.
+The compiler writes LLVM text to `hello.ll`; the next two commands assemble and link it.
+After saving INSTALL.md's `npkbuild` helper, the shorter form is:
 
-### 1. `exit()` is Restricted to `pub func:main` and `pub func:failsafe`
-Normal functions (`func:` or `pub func:`) **cannot** call `exit()`. Doing so is undefined behavior. 
-- Normal functions signal results using `pass(val)` or `fail(code)`.
-- Only `pub func:main` and `pub func:failsafe` terminate the process with `exit(code)`.
+```sh
+npkbuild hello
+./hello
+```
 
-### 2. Every Normal Function Returns a `Result<T>`
-There is no unhandled `void` in Nitpick. Side effects can fail.
-- `pass val;` returns a successful `Result<T>` containing `val`.
-- `fail code;` returns a failure `Result<T>` carrying the error code.
-- If a function has no payload value, it returns `Result<NIL>`:
-  ```nitpick
-  func:log_message = NIL(string:msg) {
-      // ...
-      pass NIL;
-  };
-  ```
+## Bindings and types
 
-### 3. Infallible Functions Must Explicitly Declare `never fails`
-If a function can never produce an error (e.g., pure mathematical calculation), declare it with `never fails`. It returns the bare value directly, and callers can unwrap it at zero cost using `raw` or `_!`:
+For each section from here through Structs, replace the entire body of `main` in `hello.npk` with that section's main-body fragment followed by `exit 0i32;`.
+Keep the `mod:hello;` line, earlier module-scope declarations and `failsafe` arms. Add declarations at module scope where directed. After each section, save `hello.npk`, build it with `npkbuild hello`, and run `./hello`; these sections exit with status 0 and print nothing.
+The compiler lists every error that can reach `failsafe` and asks for missing arms by name.
+Before this fragment, add `(IntOverflow) { exit 93i32; },` before the `(E9)` arm in `failsafe`:
+
 ```nitpick
-func:add_pure = int32(int32:a, int32:b) never fails {
-    pass a +% b;
+int32:count = 2i32;
+count = count + 1i32;
+fixed int32:ceiling = count + 1i32;
+string:label = "count";
+if (count != 3i32 || ceiling != 4i32 || label.len != 5i64) { exit 1i32; }
+```
+
+`int32:count` puts the type before the name; `3i32` supplies an integer type suffix.
+Here `count` is reassigned. `fixed` makes `ceiling` write-once: it can be initialized at runtime, but reassignment is refused with `NITPICK-ASSIGN-002`.
+
+## Functions and Result
+
+Add this fragment at module scope, outside `main`:
+
+```nitpick
+func:answer = int32(int32:unused) never fails {
+    pass 42i32;
 };
 
-// Caller unwraps without error check:
-int32:sum = raw add_pure(10i32, 20i32);
+func:note = NIL() never fails { pass NIL; };
 ```
 
-### 4. Unused Arguments Require Discard Sigil (`_~`)
-To prevent accidental unused variables, arguments that are deliberately not read in the function body must be prefixed with `_~`:
+Use this fragment inside `main`, before its final `exit`:
+
 ```nitpick
-pub func:main = int32(cstring[]:_~argv) {
-    // argv is safely marked as unused
+Result<int32>:r = answer(0i32);
+if (r.is_error) { exit 1i32; }
+if (r.value != 42i32) { exit 2i32; }
+int32:n = raw answer(0i32);
+if (n != 42i32) { exit 3i32; }
+drop note();
+```
+
+Even a `never fails` call returns `Result<int32>`; `raw` unwraps it to `int32`.
+The unused parameter `unused` compiles without `_~`. Prefixing a parameter with `_~`, as in `_~argv`, forbids reading it in the function body.
+`drop` discards the `NIL` result of the `never fails` call `note()`.
+Using `drop` on a fallible call is refused with `NITPICK-TYPE-042`.
+An ordinary function containing `exit` is refused with `NITPICK-TYPE-010`; use `pass` for success or `fail` for an error.
+
+## Errors and failsafe
+
+Before adding this section's fragments, add `(MissingItem) { exit 10i32; },` before the `(E9)` arm in `failsafe`.
+
+Add these declarations as a fragment at module scope:
+
+```nitpick
+error:MissingItem;
+
+func:lookup = int32(bool:present) {
+    if (!present) { fail MissingItem; }
+    pass 7i32;
+};
+
+func:forward = int32(bool:present) {
+    pass (relay lookup(present));
+};
+```
+
+Then try this fragment inside `main`, before its final `exit`:
+
+```nitpick
+int32:fallback = lookup(false) ?| 12i32;
+int32:found = forward(true) ?! E9;
+if (fallback != 12i32 || found != 7i32) { exit 1i32; }
+```
+
+`fail MissingItem` returns an error, `?|` supplies a fallback, and `relay` forwards a failure to the caller.
+`?! E9` takes the successful value or sends `E9` to `failsafe` on failure.
+A wildcard `(*)` alone does not replace named reachable-error arms: the compiler reports `NITPICK-REACH-002`.
+`MissingItem` is a local error name; redeclaring the prelude's `NotFound` is refused with `NITPICK-RESOLVE-001`.
+
+## Control flow and pick
+
+Try this fragment inside `main`, before its final `exit`:
+
+```nitpick
+int32:sum = 0i32;
+for (int32:i in 1i32..3i32) { sum = sum + i; }
+int32:count = 0i32;
+for (int32:j in 0i32...3i32) { count = count + 1i32; }
+if (count != 3i32) { exit 1i32; }
+pick (sum) {
+    (6i32) { count = count + 1i32; },
+    (*) { exit 2i32; }
+}
+if (count != 4i32) { exit 3i32; }
+```
+
+`1i32..3i32` includes 3; `0i32...3i32` stops before 3.
+In this example, the `6i32` arm runs and the wildcard arm does not run.
+
+## Structs
+
+Add this fragment at module scope:
+
+```nitpick
+struct:Point = { int32:x; int32:y; };
+```
+
+Use this fragment inside `main`, before its final `exit`:
+
+```nitpick
+Point:p = Point{ x: 3i32, y: 4i32 };
+p.y = 5i32;
+if (p.x != 3i32 || p.y != 5i32) { exit 1i32; }
+```
+
+`Point{ ... }` initializes the fields, and `p.y` reads or writes a field.
+
+## A library through use
+
+Save this separate program as `library.npk` at the root of the compiler clone, beside `lib/`:
+
+```nitpick
+mod:library;
+
+use "./lib/nio.npk".*;
+error:E9;
+
+func:main = int32(cstring[]:_~argv) {
+    NioW:out = raw nio_stdout();
+    nio_line(@out, "hello from a library") ?! E9;
+    nio_end(@out) ?! E9;
     exit 0i32;
 };
-```
 
-### 5. Always Handle or Escalate Results
-Nitpick does not permit silently dropping a `Result`. You must:
-- Escalate to failsafe: `result ?! Err`
-- Provide a fallback value: `val = result ?| default_val`
-- Propagate to caller: `val = _^ result` (or `relay result`)
-- Explicitly discard (if intentional): `drop result`
-
-### 6. Pattern Matching with `pick` and Exhaustive Error Handling
-Nitpick uses `pick` instead of `switch` or `match`. It is the core mechanism for handling variants, errors, and conditions:
-```nitpick
-pub func:failsafe = int32(Error:e) {
+func:failsafe = int32(Error:e) {
     pick (e) {
-        (Err)            { exit 1i32; },
-        (IntOverflow)    { exit 93i32; },
-        (OutOfBounds)    { exit 94i32; },
-        (*)              { exit 99i32; } // Wildcard default arm
+        (E9) { exit 80i32; },
+        (DecreasesViolated) { exit 81i32; },
+        (IntOverflow) { exit 82i32; },
+        (OutOfBounds) { exit 83i32; },
+        (Unreachable) { exit 84i32; },
+        (HeapOom) { exit 85i32; },
+        (HeapBadRequest) { exit 86i32; },
+        (WildLeak) { exit 87i32; },
+        (StackExhausted) { exit 88i32; },
+        (MachineFault) { exit 89i32; },
+        (*) { exit 99i32; }
     }
     exit 99i32;
 };
 ```
-* **No Accidental Fallthrough**: Unlike C's `switch`, cases do not fall through; no `break` statement is needed.
-* **Syntax**: Each arm is parenthesized `(Pattern) { body }`, separated by commas. The wildcard default arm is `(*)`.
-* **Reachability Analysis**: The compiler computes every possible error that can reach `failsafe`. If your code performs checked math (`IntOverflow`), accesses slices (`OutOfBounds`), allocates heap memory (`HeapOom`), or escalates a custom error (`Err`), `failsafe` **must** name that error or provide a wildcard `(*)` arm. Omitting a reachable error will fail at compile time.
 
-### 7. Borrowing and Address-Of Uses `@` (Not `&`)
-Coming from C, C++, or Rust, you might be tempted to write `&out` to borrow a value. 
-* In Nitpick, `&` is **strictly bitwise AND**.
-* The address-of operator is **`@`**. When passing a pointer argument to a function expecting `Type->`, pass `@variable`:
-  ```nitpick
-  nio_line(@out, "text") ?! Err; // Borrows out via address-of @
-  ```
+Build it with `npkbuild library` from the clone root, then run `./library`.
+It prints `hello from a library` and exits with status 0.
+The `use` path is relative to this source file; `@out` supplies the writer's address.
 
-### 8. Numeric Literal Syntax & Suffixes
-Nitpick enforces a unified literal syntax across all bases with zero implicit widening and no legacy C prefixes (D-147):
-* **The Leading-Digit Rule (D-147)**: Every number begins with a decimal digit `0`–`9`. If the first significant digit of a hexadecimal literal is a letter `A`–`F`, it takes a value-neutral leading zero (e.g., `0FFhex`, not `FFhex`).
-* **Base Suffixes**: The base is specified as a suffix directly after the digits:
-  * Hexadecimal: `...hex` (e.g., `0FFhex`, `1Ahex`, `0DEADBEEFhex`)
-  * Binary: `...bin` (e.g., `1010bin`, `0101bin`, `1010_1010bin`)
-  * Octal: `...oct` (e.g., `755oct`, `0755oct`)
-  * Balanced Ternary: `...tri` or `...t` (e.g., `1T01tri`, where `T`/`t` denotes `-1`)
-* **Type Suffixes**: Width and signedness suffixes attach directly *after* the base suffix:
-  * `0FFhexu8`: Hexadecimal 255 as `uint8`
-  * `1010_1010binu8`: Binary 170 as `uint8`
-  * `755octu16`: Octal 493 as `uint16`
-  * `0DEADBEEFhexu64`: Hexadecimal as `uint64`
-  * Standard decimals: `0i8`, `42i32`, `100u64`, `3.1415f32`
-*(Note: Legacy C-style prefixes like `0x`, `0b`, and `0o` were explicitly removed in D-147 so all bases share one consistent syntax. Writing `0xFF` is a compile-time `NITPICK-LEX-003` syntax error).*
+For further reading, see the reference files in `meta/specs/` in the compiler clone.
 
-### 9. Declaring Errors with `error:Name;`
-Instead of throwing exception classes or passing untyped integer codes, declare domain errors as top-level items:
-```nitpick
-error:Err;
-error:NotFound;
-error:Timeout;
-```
-Each error is assigned a deterministic identity by the compiler, allowing compile-time exhaustiveness checking in `pick` blocks.
+Checked against compiler commit 64861f8.
