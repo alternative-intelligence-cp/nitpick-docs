@@ -1,34 +1,24 @@
-# Nitpick Documentation
+# Nitpick documentation
 
-Welcome to the official developer documentation repository for the **Nitpick** programming language.
+Start with [INSTALL.md](https://github.com/alternative-intelligence-cp/nitpick/blob/main/INSTALL.md) for the source installation, LLVM tools, PATH setup and first program.
+Save the `npkbuild` helper from its first-program section.
+For `hello.npk`, use:
 
-Nitpick is a modern systems programming language built from the ground up for formal correctness, deterministic memory safety without a garbage collector, zero undefined behavior, and high-performance out-of-process legacy interoperability.
+```sh
+npkbuild hello
+./hello
+```
 
----
+Read these guides in order:
 
-## Documentation Guides
+1. [Quick start](01_QUICK_START.md): a first program, bindings, functions and `Result`, errors and `failsafe`, control flow, structs, and a library import.
+2. [Cheat sheet](02_CHEAT_SHEET.md): short examples of calls, operators, types and literals.
+3. [Driver guide](03_DRIVER_MODEL_GUIDE.md): the SDK header, C build setup, library paths, and a Nitpick client with a C driver.
 
-### 1. [Quick Start Guide](01_QUICK_START.md)
-* Prerequisites, LLVM toolchain dependencies (`llc`, `ld.lld`).
-* Writing your first canonical "Hello World" application.
-* Compiling via the automated runner harness vs. direct CLI commands.
-* Core language rules for beginners (`pub func:main`, `pub func:failsafe`, `Result<T>` propagation).
+The guides and [examples](https://github.com/alternative-intelligence-cp/nitpick-docs/tree/main/examples) come from the public [documentation repository](https://github.com/alternative-intelligence-cp/nitpick-docs), on branch `main`, with the guides at its top level.
+Clone it beside the compiler clone, so that `nitpick/` and `nitpick-docs/` share a parent folder.
+For the hello example, work in `examples/01_hello/`: run `npkbuild hello`, then `./hello`.
+See the driver guide for `examples/02_driver/` and its build commands.
+For further reading in the clone, see the reference files in `meta/specs/`.
 
-### 2. [Language Cheat Sheet](02_CHEAT_SHEET.md)
-* Complete 19-level operator precedence table.
-* First-class wrapping arithmetic (`+%`, `-%`, `*%`), error escalation (`?!`, `_~`, `_^`), and memory claims (`$$i`, `$$m`).
-* Bit-precise scalar types (`int8`..`int4096`), fixed-point/rationals (`frac`, `tbb`, `tfp`), and runtime containers (`Handle`, `arena`, `atomic`, `Result`, `Bridge`).
-* Declarations, modifiers, verification clauses (`never fails`, `requires`, `ensures`), and compiler intrinsics (`NitpickAlloc`).
-
-### 3. [Out-of-Process Driver Model & Bridge Guide](03_DRIVER_MODEL_GUIDE.md)
-* Architectural motivation: why in-process FFI is unsafe and how supervised isolation prevents memory corruption.
-* Wire Protocol v3: control socket (fd 3) and sealed shared memory ring buffer (`NPKDRV03`).
-* Writing C drivers using the `sdk/npkdrv.h` header.
-* Consuming drivers in Nitpick via `extern:"driver"` and asynchronous `await`.
-* Fault containment: intercepting C segfaults as `EDriverFault` while keeping the host runtime alive.
-
----
-
-## Editor Support
-
-Official syntax highlighting, bracket matching, and code snippets for **Antigravity IDE** and **VSCode** are available in the [vscode-nitpick](file:///home/randy/Workspace/META/NITPICK-LIBS/vscode-nitpick) extension.
+Checked against compiler commit 64861f8.
