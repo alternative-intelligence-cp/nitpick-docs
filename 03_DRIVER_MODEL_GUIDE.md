@@ -1,231 +1,206 @@
-# Nitpick Out-of-Process Driver Model & Bridge Guide
+# Driver model and Bridge guide
 
-This guide explains Nitpick's out-of-process driver architecture (Protocol Wire v3, D-149), which allows Nitpick applications to interact with legacy C/C++, graphics libraries (OpenGL, Vulkan, GTK4), hardware APIs, and CUDA with zero performance compromises and complete fault isolation.
+## Files and tools
 
----
+Follow [INSTALL.md](https://github.com/alternative-intelligence-cp/nitpick/blob/main/INSTALL.md) for the source installation and keep the compiler clone.
+Use the SDK header at `sdk/npkdrv.h` in that clone; no separate header download is needed.
+This example also uses the clone's `lib/nbridge.npk` and `lib/nio.npk`.
+The driver needs a C11 compiler available as `cc` and Linux C development headers, in addition to INSTALL.md's tools.
+GCC or Clang can provide `cc`; the commands below use `cc`.
 
-## 1. Why Out-of-Process Isolation?
+Clone the public [documentation repository](https://github.com/alternative-intelligence-cp/nitpick-docs) beside the compiler clone, so that `nitpick/` and `nitpick-docs/` share a parent folder.
+Use `canvas_driver.c` and `gui_bridge_poc.npk` in `nitpick-docs/examples/02_driver/`.
+Run every command below from that folder.
 
-In traditional systems languages (C++, Rust, Zig, Go), Foreign Function Interface (FFI) runs **in-process**. If a C library has a buffer overflow, dereferences a null pointer, or corrupts heap metadata, it detonates the entire host process. All safety guarantees are destroyed the instant an unverified C library is linked.
+## The C driver
 
-Nitpick solves this through **Supervised Out-of-Process Drivers**:
-
-```
-+-----------------------------------------------------------------------+
-|                         NITPICK RUNTIME (TCB)                         |
-|                                                                       |
-|  pub func:main                                                        |
-|    await render_ppm(@b, 400i32, 300i32, ...)                          |
-+-----------------------------------+-----------------------------------+
-                                    |
-          Control Socket (fd 3)     |  Sealed Shared Memory (memfd)
-          INIT_REQ / EXEC_NOTIFY    |  32-byte Ring Descriptors + Slices
-                                    |
-+-----------------------------------+-----------------------------------+
-|                        SUPERVISED C DRIVER                            |
-|                     (Outside the Nitpick TCB)                         |
-|                                                                       |
-|  canvas_driver: handles OpenGL / GTK / CUDA / C libraries             |
-|  If it segfaults -> Nitpick catches EDriverFault; host stays alive!   |
-+-----------------------------------------------------------------------+
-```
-
-### Core Architectural Guarantees
-1. **Zero-Copy Performance**: Communication happens over a sealed shared memory region (`memfd`). Bulk image, audio, or tensor slices are passed without copying data between user and kernel space.
-2. **Fault Containment (The Firewall)**: The driver runs in a separate process monitored via Linux `pidfd`. If the C driver segfaults, divides by zero, or hits an assertion, the Nitpick process intercepts it as `EDriverFault`. The host runtime's heap and execution remain completely untouched.
-3. **No Orphan Processes**: When Nitpick terminates (cleanly or via failsafe trap), the supervisor registry kills all associated drivers immediately.
-
----
-
-## 2. The Wire Protocol (v3)
-
-Communication consists of two planes:
-
-### A. The Control Plane (UNIX Domain Socket, fd 3)
-* **`0x0001 INIT_REQ`** (Bridge -> Driver): Passes shared memory capacity and interface hash, with the sealed `memfd` transferred via `SCM_RIGHTS`.
-* **`0x8001 INIT_ACK`** (Driver -> Bridge): Acknowledges initialization.
-* **`0x0002 EXEC_NOTIFY`** (Bridge -> Driver): Signals that a new job descriptor is available on the ring.
-* **`0x8002 WORK_COMPLETE`** (Driver -> Bridge): Signals job completion with status code (0 = success).
-* **`0x00FF SHUTDOWN`** (Bridge -> Driver): Advisory teardown notification.
-
-### B. The Data Plane (Sealed Shared Memory Ring)
-* **Header Magic (`0x00`)**: `0x4E504B4452563033` (`"NPKDRV03"`).
-* **Ring Counters**: C11 atomic head (`0x40`) and tail (`0x80`) offsets.
-* **Descriptor Ring (`0x100`)**: Ring of 32-byte records:
-  ```c
-  struct {
-      uint32_t seq;
-      uint32_t kernel_id;
-      uint64_t arg_off;
-      uint64_t arg_len;
-      uint64_t resp_off;
-  };
-  ```
-* **Bulk Buffer**: Dedicated shared memory area for zero-copy slice passing.
-
-### C. The Interface Hash
-To prevent type confusion or mismatched ABIs between a Nitpick application and a driver binary, both sides compute an **Interface Hash** over the canonical method spellings using FNV-1a basis `0xCBF5DAE484222325` and prime `0x100000001B3`. If the signatures do not match identically, the driver refuses initialization immediately.
-
----
-
-## 3. Implementing a Driver in C (Using `sdk/npkdrv.h`)
-
-The Nitpick repository provides the single-header C driver SDK in `sdk/npkdrv.h`.
-
-Here is a complete, minimal C driver (`canvas_driver.c`):
+Save this as `canvas_driver.c`:
 
 ```c
-#include "REPOS/nitpick/sdk/npkdrv.h"
+#include "npkdrv.h"
 
-// 1. Declare canonical interface signatures in exact declaration order (kernel_id 0..N)
 static const char *const CANON[] = {
     "ping=int64(int64)",
     "render_ppm=int64(int32,int32,int32)",
     "filter_image=int64(uint8[],int32,int32)",
-    "crash_driver=NIL()",
     NULL,
 };
 
 int main(void) {
     npkdrv d;
-    uint64_t hash = npkdrv_iface_hash(CANON);
-    
-    // 2. Initialize driver and handshake with Nitpick over control socket fd 3
-    if (npkdrv_init(&d, hash) != 0) {
-        return 10;
-    }
-
-    // 3. Dispatch loop
+    if (npkdrv_init(&d, npkdrv_iface_hash(CANON)) != 0) return 10;
     for (;;) {
         npkdrv_desc req;
         int r = npkdrv_next(&d, &req);
-        if (r == 0) return 0; // Clean shutdown requested by Nitpick
+        if (r == 0) return 0;
         if (r < 0) return 11;
-
         switch (req.kernel_id) {
-        case 0: { // ping(int64 x) -> int64
+        case 0: {
             int64_t x;
             memcpy(&x, d.shm + req.arg_off, 8);
-            int64_t ret = x + 1;
-            memcpy(d.shm + req.resp_off, &ret, 8);
-            if (npkdrv_complete(req.seq, 0) != 0) return 12;
+            int64_t reply = x + 1;
+            memcpy(d.shm + req.resp_off, &reply, 8);
             break;
         }
-
-        case 1: { // render_ppm(int32 width, int32 height, int32 color) -> int64
-            int64_t w_slot, h_slot, c_slot;
-            memcpy(&w_slot, d.shm + req.arg_off + 0, 8);
-            memcpy(&h_slot, d.shm + req.arg_off + 8, 8);
-            memcpy(&c_slot, d.shm + req.arg_off + 16, 8);
-            
-            // Execute rendering logic...
-            int64_t pixels = w_slot * h_slot;
+        case 1: {
+            int64_t ws, hs, cs;
+            memcpy(&ws, d.shm + req.arg_off, 8);
+            memcpy(&hs, d.shm + req.arg_off + 8, 8);
+            memcpy(&cs, d.shm + req.arg_off + 16, 8);
+            int width = (int)ws, height = (int)hs;
+            FILE *f = fopen("canvas_output.ppm", "wb");
+            if (!f) return 13;
+            fprintf(f, "P6\n%d %d\n255\n", width, height);
+            for (int y = 0; y < height; y++) {
+                for (int x = 0; x < width; x++) {
+                    fputc(x * 255 / width, f);
+                    fputc(y * 255 / height, f);
+                    fputc((int)(cs & 255), f);
+                }
+            }
+            if (fclose(f) != 0) return 14;
+            int64_t pixels = (int64_t)width * height;
             memcpy(d.shm + req.resp_off, &pixels, 8);
-            if (npkdrv_complete(req.seq, 0) != 0) return 12;
             break;
         }
-
-        case 2: { // filter_image(uint8[] pixels, int32 width, int32 height) -> int64
-            // Slice layout: slot 0 = relative offset from bulk base, slot 1 = length
+        case 2: {
             uint64_t rel_off, len;
-            memcpy(&rel_off, d.shm + req.arg_off + 0, 8);
+            memcpy(&rel_off, d.shm + req.arg_off, 8);
             memcpy(&len, d.shm + req.arg_off + 8, 8);
-            
-            uint8_t *pixel_data = d.bulk + rel_off;
+            uint8_t *pixels = d.shm + d.bulk_offset + rel_off;
             int64_t sum = 0;
             for (uint64_t i = 0; i < len; i++) {
-                sum += pixel_data[i];
+                pixels[i] = 255 - pixels[i];
+                sum += pixels[i];
             }
             memcpy(d.shm + req.resp_off, &sum, 8);
-            if (npkdrv_complete(req.seq, 0) != 0) return 12;
             break;
         }
-
-        case 3: { // crash_driver() -> NIL
-            // Intentionally dereference NULL to demonstrate fault containment
-            volatile int *null_ptr = NULL;
-            *null_ptr = 42; 
-            break;
+        default:
+            return 15;
         }
-        }
+        if (npkdrv_complete(req.seq, 0) != 0) return 12;
     }
 }
 ```
 
-### Compiling the C Driver
-```bash
-clang -O2 -Wall -Wextra canvas_driver.c -o canvas_driver
-```
+Build it from the example folder with `cc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -I ../../../nitpick/sdk canvas_driver.c -o canvas_driver`.
+The `-I ../../../nitpick/sdk` option supplies the include directory for `#include "npkdrv.h"`.
+Keep the SDK header and library files from the same clone for this example.
 
----
+## The Nitpick client
 
-## 4. Consuming the Driver in Nitpick
-
-On the Nitpick side, declare the driver interface using an `extern:"driver_name"` block:
+Save this as `gui_bridge_poc.npk` in `examples/02_driver/` (the supplied example has the same text):
 
 ```nitpick
-mod:gui_app;
-error:Err;
+mod:gui_bridge_poc;
 
-use "REPOS/nitpick/lib/nbridge.npk".*;
-use "REPOS/nitpick/lib/nio.npk".*;
+use "../../../nitpick/lib/nbridge.npk".*;
+use "../../../nitpick/lib/nio.npk".*;
+error:E9;
 
-// 1. Declare external driver interface. Methods map 0-indexed to kernel_id
 extern:"canvas_drv" = {
-    func:ping         = int64(Bridge->:b, int64:val, Duration:within);
-    func:render_ppm   = int64(Bridge->:b, int32:width, int32:height, int32:color, Duration:within);
+    func:ping = int64(Bridge->:b, int64:val, Duration:within);
+    func:render_ppm = int64(Bridge->:b, int32:width, int32:height, int32:color, Duration:within);
     func:filter_image = int64(Bridge->:b, uint8[]:pixels, int32:width, int32:height, Duration:within);
-    func:crash_driver = NIL(Bridge->:b, Duration:within);
 };
 
-pub async func:main = int32(cstring[]:argv) {
-    if (argv.len < 2i64) { exit 1i32; }
+async func:main = int32(cstring[]:argv) {
+    if (argv.len != 2i64) { exit 1i32; }
+    string:driver_path = string_from_bytes(argv[1i64].ptr, argv[1i64].len);
+    Path:p = path_parse(driver_path) ?! E9;
+    int64:h = raw canvas_drv_iface_hash();
+    Result<Bridge>:br = await spawn_driver(p, 65536i64, 64i64, h, raw duration_secs(5i64));
+    if (br.is_error) { exit 1i32; }
+    Bridge:b = move(br) ?! E9;
 
-    Path:p = path_parse(string_from_bytes(argv[1i64].ptr, argv[1i64].len)) ?! Err;
-    int64:hash = raw canvas_drv_iface_hash();
-    NioW:out = raw nio_stdout();
-
-    // 2. Spawn driver over shared memory ring (64KB shm, 64-slot ring, 5s timeout)
-    Bridge:b = await spawn_driver(p, 65536i64, 64i64, hash, raw duration_secs(5i64)) ?! Err;
-
-    // 3. Make asynchronous calls
     Result<int64>:pr = await ping(@b, 42i64, raw duration_secs(5i64));
     if (pr.is_error) { exit 2i32; }
+    if (pr.value != 43i64) { exit 3i32; }
 
-    // 4. Pass zero-copy slice over ring
+    Result<int64>:rr = await render_ppm(@b, 400i32, 300i32, 255i32, raw duration_secs(5i64));
+    if (rr.is_error) { exit 4i32; }
+    if (rr.value != 120000i64) { exit 5i32; }
+
     uint8[4]:buf = [10u8, 20u8, 30u8, 40u8];
     uint8[]:slice = buf[0i64...4i64];
     Result<int64>:fr = await filter_image(@b, slice, 2i32, 2i32, raw duration_secs(5i64));
-    
-    // 5. Fault Containment Test: Driver crash does NOT crash Nitpick!
-    nio_line(@out, "[*] Triggering C crash...") ?! Err;
-    Result<NIL>:cr = await crash_driver(@b, raw duration_secs(5i64));
-    
-    if (cr.is_error && cr.err == EDriverFault) {
-        nio_line(@out, "[+] Driver crashed with SIGSEGV, but caught safely as EDriverFault!") ?! Err;
-        nio_line(@out, "[+] Nitpick host runtime is completely intact.") ?! Err;
-    }
+    if (fr.is_error) { exit 6i32; }
+    if (fr.value != 920i64) { exit 7i32; }
 
-    // 6. Clean teardown
+    Result<NIL>:closed = await bridge_close(@b, raw duration_secs(3i64));
+    if (closed.is_error) { exit 8i32; }
     drop bridge_reap(@b);
+    NioW:out = raw nio_stdout();
+    nio_line(@out, "driver calls completed") ?! E9;
+    nio_end(@out) ?! E9;
     exit 0i32;
 };
 
-pub func:failsafe = int32(Error:e) {
+func:failsafe = int32(Error:e) {
     pick (e) {
-        (EDriverFault)    { exit 94i32; },
-        (EDriverDeadline) { exit 96i32; },
-        (*)               { exit 99i32; }
+        (E9) { exit 80i32; },
+        (BadPath) { exit 81i32; },
+        (EDriverSpawn) { exit 82i32; },
+        (EDriverFault) { exit 83i32; },
+        (EDriverProtocol) { exit 84i32; },
+        (EDriverDeadline) { exit 85i32; },
+        (EDriverError) { exit 86i32; },
+        (ERingFull) { exit 87i32; },
+        (EBridgePoisoned) { exit 88i32; },
+        (EShmCreate) { exit 89i32; },
+        (EShmSeal) { exit 90i32; },
+        (EShmMap) { exit 91i32; },
+        (DeadlineExceeded) { exit 92i32; },
+        (DriverLeak) { exit 93i32; },
+        (DecreasesViolated) { exit 94i32; },
+        (IntOverflow) { exit 95i32; },
+        (OutOfBounds) { exit 96i32; },
+        (Unreachable) { exit 97i32; },
+        (HeapOom) { exit 98i32; },
+        (HeapBadRequest) { exit 99i32; },
+        (WildLeak) { exit 100i32; },
+        (StackExhausted) { exit 101i32; },
+        (MachineFault) { exit 102i32; },
+        (*) { exit 99i32; }
     }
     exit 99i32;
 };
 ```
 
----
+Each `use` path is relative to `gui_bridge_poc.npk`: `../../../nitpick/lib/nbridge.npk` reaches the compiler clone's `lib/nbridge.npk`.
+The C signature table and the `extern` declarations list the same three methods in the same order.
+In this example, `ping(42)` returns 43, `render_ppm(400, 300, 255)` returns 120000, and `filter_image` returns 920 for the four bytes shown.
+The C driver writes `canvas_output.ppm` in the working directory, with a 400 by 300 image.
+`move(br) ?! E9` takes the Bridge from the spawn result; `bridge_close` and `bridge_reap` finish this example's driver session.
 
-## 5. Performance Characteristics
+## Build and run
 
-In verified benchmarks against Linux IPC mechanisms:
-- **Ping-Pong Latency**: Over 10,000 round-trip calls over the atomic shared memory ring execute in **sub-millisecond** average times, bypassing standard socket context-switching overhead.
-- **Bulk Slices**: Transferring 4K image frames or audio buffers incurs zero memory copying: the driver maps the physical pages directly from the sealed memfd.
-- **Teardown**: When Nitpick closes, `bridge_reap` safely reaps the child pidfd; if a crash occurs, the supervisor registry ensures no zombie driver processes linger.
+Use the `npkbuild` helper from INSTALL.md after building the C driver:
+
+```sh
+npkbuild gui_bridge_poc
+./gui_bridge_poc "$PWD/canvas_driver"
+```
+
+The client prints `driver calls completed` and exits with status 0.
+Pass the driver as `"$PWD/canvas_driver"` from `examples/02_driver/`; the client reads that command-line argument with `path_parse`.
+The SDK header contains the control-message constants and descriptor declarations for further reading.
+
+## Low-level driver calls
+
+The example above uses `spawn_driver` and `bridge_reap` from `lib/nbridge.npk`.
+The lower-level `clone_exec(p)` takes a `wild any->` pointing to a ten-word parameter block: path, argv, envp, stdin/stdout/stderr sources, optional control descriptor, parent pid, and two output slots (registry slot and pidfd).
+It starts a supervised child and returns its pid in a `Result<int64>`; see `meta/specs/BUILTIN_REFERENCE.md`, `clone_exec`, for the block layout and descriptor requirements.
+`driver_retire(slot);` takes an `int64` registry slot and retires it after the child is dead and reaped; it returns `NIL`.
+These module-scope fragments compile when added to a complete program, but this guide doesn't run them. They require the prepared block and live registry state described above; the complete library example is the runnable entry point.
+
+```nitpick
+func:start = int64(wild int8->:p) { pass (relay clone_exec(p)); };
+```
+
+```nitpick
+func:retire = NIL(int64:slot) never fails { driver_retire(slot); pass NIL; };
+```
+
+Checked against compiler commit 64861f8.
